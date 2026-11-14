@@ -4,9 +4,10 @@ import net.minecraft.client.MinecraftClient;
 import net.minecraft.client.network.ClientPlayerEntity;
 import net.minecraft.entity.player.PlayerInventory;
 import net.minecraft.item.ItemStack;
-import net.minecraft.item.Items;
+import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
+import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import org.lwjgl.glfw.GLFW;
 import org.spongepowered.asm.mixin.Mixin;
@@ -20,13 +21,14 @@ import java.util.Locale;
 @Mixin(MinecraftClient.class)
 public abstract class MinecraftClientMixin {
 
-    // Y: зелье, в названии которого есть «святая вода»
+    // Y: предмет, в названии которого есть «святая вода»
     @Unique private static final String HOLY_PART = "святая вода";
-    // H: зелье, в названии которого есть «радиац»
+    // H: предмет, в названии которого есть «радиац»
     @Unique private static final String RADIATION_PART = "радиац";
 
     @Unique private boolean holywater$yWasDown = false;
     @Unique private boolean holywater$hWasDown = false;
+    @Unique private boolean holywater$greeted = false;
 
     @Inject(method = "tick", at = @At("HEAD"))
     private void holywater$tick(CallbackInfo ci) {
@@ -39,32 +41,51 @@ public abstract class MinecraftClientMixin {
         boolean hPressed = hDown && !holywater$hWasDown;
         holywater$yWasDown = yDown;
         holywater$hWasDown = hDown;
-        if (!yPressed && !hPressed) return;
 
-        // не реагируем, если открыто меню или чат
-        if (mc.currentScreen != null || mc.player == null || mc.interactionManager == null) return;
+        if (mc.player == null) {
+            holywater$greeted = false;
+            return;
+        }
+        if (!holywater$greeted) {
+            holywater$greeted = true;
+            holywater$msg(mc, "[Мод] загружен. Y = святая вода, H = зелье радиации");
+        }
+
+        if (!yPressed && !hPressed) return;
+        if (mc.currentScreen != null || mc.interactionManager == null) return;
         if (mc.player.isSpectator()) return;
 
-        if (yPressed) holywater$use(mc, HOLY_PART, "Святая вода");
-        if (hPressed) holywater$use(mc, RADIATION_PART, "Зелье радиации");
+        if (yPressed) {
+            holywater$msg(mc, "[Мод] нажата Y");
+            holywater$use(mc, HOLY_PART, "Святая вода");
+        }
+        if (hPressed) {
+            holywater$msg(mc, "[Мод] нажата H");
+            holywater$use(mc, RADIATION_PART, "Зелье радиации");
+        }
     }
 
-    // можно бросить: взрывное или задерживающееся зелье
     @Unique
-    private static boolean holywater$isThrowable(ItemStack s) {
-        return !s.isEmpty() && (s.isOf(Items.SPLASH_POTION) || s.isOf(Items.LINGERING_POTION));
+    private static void holywater$msg(MinecraftClient mc, String text) {
+        mc.inGameHud.getChatHud().addMessage(Text.literal(text));
     }
 
-    // название так, как его видит игрок, без цветовых кодов, в нижнем регистре
+    // название так, как его видит игрок, в нижнем регистре
     @Unique
     private static String holywater$nameOf(ItemStack s) {
         String n = s.getName().getString();
         return n.replaceAll("§.", "").replace('ё', 'е').toLowerCase(Locale.ROOT).trim();
     }
 
+    // ищем только по названию, тип предмета не проверяем
     @Unique
     private static boolean holywater$matches(ItemStack s, String part) {
-        return holywater$isThrowable(s) && holywater$nameOf(s).contains(part);
+        return !s.isEmpty() && holywater$nameOf(s).contains(part);
+    }
+
+    @Unique
+    private static String holywater$idOf(ItemStack s) {
+        return Registries.ITEM.getId(s.getItem()).toString();
     }
 
     @Unique
@@ -73,9 +94,11 @@ public abstract class MinecraftClientMixin {
         PlayerInventory inv = player.getInventory();
 
         // 1) во второй руке
-        if (holywater$matches(player.getOffHandStack(), part)) {
-            mc.interactionManager.interactItem(player, Hand.OFF_HAND);
-            mc.inGameHud.setOverlayMessage(Text.literal(label + ": брошено"), false);
+        ItemStack off = player.getOffHandStack();
+        if (holywater$matches(off, part)) {
+            holywater$msg(mc, "[Мод] " + label + ": найдено во второй руке (" + holywater$idOf(off) + ")");
+            ActionResult r = mc.interactionManager.interactItem(player, Hand.OFF_HAND);
+            holywater$msg(mc, "[Мод] результат: " + r.getClass().getSimpleName());
             return;
         }
 
@@ -86,20 +109,21 @@ public abstract class MinecraftClientMixin {
         }
 
         if (found < 0) {
-            // подсказка: какие бросаемые зелья вообще есть в инвентаре
             StringBuilder sb = new StringBuilder();
             for (int i = 0; i < 36; i++) {
                 ItemStack s = inv.getStack(i);
-                if (holywater$isThrowable(s)) {
-                    if (sb.length() > 0) sb.append(", ");
-                    sb.append('«').append(s.getName().getString()).append('»');
+                if (!s.isEmpty() && holywater$idOf(s).contains("potion")) {
+                    if (sb.length() > 0) sb.append("; ");
+                    sb.append(holywater$idOf(s)).append(" «").append(s.getName().getString()).append('»');
                 }
             }
-            String have = sb.length() == 0 ? "нет взрывных зелий" : sb.toString();
-            mc.inGameHud.getChatHud().addMessage(
-                Text.literal("[Мод] " + label + " не найдено. В инвентаре: " + have));
+            holywater$msg(mc, "[Мод] " + label + " не найдено. Зелья в инвентаре: "
+                + (sb.length() == 0 ? "нет" : sb.toString()));
             return;
         }
+
+        ItemStack target = inv.getStack(found);
+        holywater$msg(mc, "[Мод] " + label + ": найдено в слоте " + found + " (" + holywater$idOf(target) + ")");
 
         int selected = inv.getSelectedSlot();
         // номер слота в окне инвентаря игрока: хотбар 36..44, основной инвентарь 9..35
@@ -107,14 +131,14 @@ public abstract class MinecraftClientMixin {
         int syncId = player.playerScreenHandler.syncId;
         boolean swapped = found != selected;
 
-        // временно ставим зелье в выбранный слот хотбара, бросаем, возвращаем обратно
+        // временно ставим предмет в выбранный слот хотбара, используем, возвращаем обратно
         if (swapped) {
             mc.interactionManager.clickSlot(syncId, slotId, selected, SlotActionType.SWAP, player);
         }
-        mc.interactionManager.interactItem(player, Hand.MAIN_HAND);
+        ActionResult r = mc.interactionManager.interactItem(player, Hand.MAIN_HAND);
         if (swapped) {
             mc.interactionManager.clickSlot(syncId, slotId, selected, SlotActionType.SWAP, player);
         }
-        mc.inGameHud.setOverlayMessage(Text.literal(label + ": брошено"), false);
+        holywater$msg(mc, "[Мод] результат: " + r.getClass().getSimpleName());
     }
 }
