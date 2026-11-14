@@ -7,7 +7,6 @@ import net.minecraft.item.ItemStack;
 import net.minecraft.registry.Registries;
 import net.minecraft.screen.slot.SlotActionType;
 import net.minecraft.text.Text;
-import net.minecraft.util.ActionResult;
 import net.minecraft.util.Hand;
 import org.lwjgl.glfw.GLFW;
 import org.spongepowered.asm.mixin.Mixin;
@@ -21,33 +20,41 @@ import java.util.Locale;
 @Mixin(MinecraftClient.class)
 public abstract class MinecraftClientMixin {
 
-    // Y: предмет, в названии которого есть «святая вода»
-    @Unique private static final String HOLY_PART = "святая вода";
-    // H: предмет, в названии которого есть «радиац»
-    @Unique private static final String RADIATION_PART = "радиац";
+    // клавиши: Y, H, B, N
+    @Unique private static final int[] KEYS = {
+        GLFW.GLFW_KEY_Y, GLFW.GLFW_KEY_H, GLFW.GLFW_KEY_B, GLFW.GLFW_KEY_N
+    };
+    // что искать в названии предмета (без ё, в нижнем регистре)
+    @Unique private static final String[] PARTS = {
+        "святая вода", "радиац", "паллад", "ассасин"
+    };
+    // как называть в сообщениях
+    @Unique private static final String[] LABELS = {
+        "Святая вода", "Зелье радиации", "Зелье Палладина", "Зелье Ассасина"
+    };
 
-    @Unique private boolean holywater$yWasDown = false;
-    @Unique private boolean holywater$hWasDown = false;
+    @Unique private boolean[] holywater$wasDown = new boolean[4];
     @Unique private boolean holywater$greeted = false;
 
-    // многотиковая последовательность: 0 = ничего, 1 = пора бросать, 2 = пора вернуть
+    // последовательность: 0 = ничего, 1 = пора использовать, 2 = пора вернуть, 3 = идёт питьё
     @Unique private int holywater$stage = 0;
     @Unique private int holywater$delay = 0;
-    @Unique private int holywater$mode = 0;            // 0 = обмен слотами, 1 = смена слота хотбара
-    @Unique private int holywater$slotId = 0;          // слот в окне инвентаря (для обмена)
-    @Unique private int holywater$selected = 0;        // выбранный слот хотбара до начала
+    @Unique private int holywater$timeout = 0;
+    @Unique private int holywater$mode = 0;      // 0 = обмен слотами, 1 = смена слота хотбара, 2 = вторая рука
+    @Unique private int holywater$slotId = 0;    // слот в окне инвентаря (для обмена)
+    @Unique private int holywater$selected = 0;  // выбранный слот хотбара до начала
 
     @Inject(method = "tick", at = @At("HEAD"))
     private void holywater$tick(CallbackInfo ci) {
         MinecraftClient mc = (MinecraftClient) (Object) this;
 
         long window = GLFW.glfwGetCurrentContext();
-        boolean yDown = window != 0L && GLFW.glfwGetKey(window, GLFW.GLFW_KEY_Y) == GLFW.GLFW_PRESS;
-        boolean hDown = window != 0L && GLFW.glfwGetKey(window, GLFW.GLFW_KEY_H) == GLFW.GLFW_PRESS;
-        boolean yPressed = yDown && !holywater$yWasDown;
-        boolean hPressed = hDown && !holywater$hWasDown;
-        holywater$yWasDown = yDown;
-        holywater$hWasDown = hDown;
+        int pressedIndex = -1;
+        for (int i = 0; i < KEYS.length; i++) {
+            boolean down = window != 0L && GLFW.glfwGetKey(window, KEYS[i]) == GLFW.GLFW_PRESS;
+            if (down && !holywater$wasDown[i] && pressedIndex < 0) pressedIndex = i;
+            holywater$wasDown[i] = down;
+        }
 
         if (mc.player == null) {
             holywater$greeted = false;
@@ -56,22 +63,21 @@ public abstract class MinecraftClientMixin {
         }
         if (!holywater$greeted) {
             holywater$greeted = true;
-            holywater$msg(mc, "[Мод] загружен. Y = святая вода, H = зелье радиации");
+            holywater$msg(mc, "[Мод] загружен. Y = святая вода, H = радиация, B = Палладин, N = Ассасин");
         }
         if (mc.interactionManager == null) return;
 
-        // идёт последовательность броска: ведём её дальше, новые нажатия игнорируем
+        // идёт последовательность: ведём её дальше, новые нажатия игнорируем
         if (holywater$stage != 0) {
             holywater$advance(mc);
             return;
         }
 
-        if (!yPressed && !hPressed) return;
+        if (pressedIndex < 0) return;
         if (mc.currentScreen != null) return;
         if (mc.player.isSpectator()) return;
 
-        if (yPressed) holywater$use(mc, HOLY_PART, "Святая вода");
-        else if (hPressed) holywater$use(mc, RADIATION_PART, "Зелье радиации");
+        holywater$use(mc, PARTS[pressedIndex], LABELS[pressedIndex]);
     }
 
     @Unique
@@ -97,17 +103,22 @@ public abstract class MinecraftClientMixin {
         return Registries.ITEM.getId(s.getItem()).toString();
     }
 
-    // шаг 1: находим зелье и готовим его (кладём в руку)
+    // шаг 1: находим предмет и готовим его (кладём в руку)
     @Unique
     private void holywater$use(MinecraftClient mc, String part, String label) {
         ClientPlayerEntity player = mc.player;
         PlayerInventory inv = player.getInventory();
 
-        // зелье во второй руке: бросаем сразу
-        ItemStack off = player.getOffHandStack();
-        if (holywater$matches(off, part)) {
-            ActionResult r = mc.interactionManager.interactItem(player, Hand.OFF_HAND);
-            holywater$msg(mc, "[Мод] " + label + ": из второй руки, результат: " + r);
+        // предмет во второй руке: используем сразу
+        if (holywater$matches(player.getOffHandStack(), part)) {
+            mc.interactionManager.interactItem(player, Hand.OFF_HAND);
+            mc.inGameHud.setOverlayMessage(Text.literal(label + ": использовано"), false);
+            holywater$mode = 2;
+            if (player.isUsingItem()) {
+                holywater$stage = 3;
+                holywater$timeout = 80;
+                mc.options.useKey.setPressed(true);
+            }
             return;
         }
 
@@ -123,7 +134,7 @@ public abstract class MinecraftClientMixin {
                 ItemStack s = inv.getStack(i);
                 if (!s.isEmpty() && holywater$idOf(s).contains("potion")) {
                     if (sb.length() > 0) sb.append("; ");
-                    sb.append(holywater$idOf(s)).append(" «").append(s.getName().getString()).append('»');
+                    sb.append('«').append(s.getName().getString()).append('»');
                 }
             }
             holywater$msg(mc, "[Мод] " + label + " не найдено. Зелья в инвентаре: "
@@ -131,7 +142,7 @@ public abstract class MinecraftClientMixin {
             return;
         }
 
-        holywater$msg(mc, "[Мод] " + label + ": найдено в слоте " + found);
+        mc.inGameHud.setOverlayMessage(Text.literal(label + ": использовано"), false);
 
         int selected = inv.getSelectedSlot();
         holywater$selected = selected;
@@ -149,30 +160,50 @@ public abstract class MinecraftClientMixin {
         }
 
         holywater$stage = 1;
-        holywater$delay = 4; // 4 тика (0.2 с) паузы перед броском
+        holywater$delay = 4; // 4 тика (0.2 с) паузы перед использованием
     }
 
-    // шаги 2 и 3: бросаем, потом возвращаем всё на место
+    // шаги 2 и 3: используем, ждём окончания питья, возвращаем всё на место
     @Unique
     private void holywater$advance(MinecraftClient mc) {
+        ClientPlayerEntity player = mc.player;
+        PlayerInventory inv = player.getInventory();
+
+        // идёт питьё: удерживаем «использование», пока предмет не будет выпит
+        if (holywater$stage == 3) {
+            if (player.isUsingItem() && holywater$timeout-- > 0) {
+                mc.options.useKey.setPressed(true);
+                return;
+            }
+            mc.options.useKey.setPressed(false);
+            holywater$stage = 2;
+            holywater$delay = 4;
+            return;
+        }
+
         if (holywater$delay > 0) {
             holywater$delay--;
             return;
         }
-        ClientPlayerEntity player = mc.player;
-        PlayerInventory inv = player.getInventory();
 
         if (holywater$stage == 1) {
-            ActionResult r = mc.interactionManager.interactItem(player, Hand.MAIN_HAND);
-            holywater$msg(mc, "[Мод] бросок, результат: " + r);
-            holywater$stage = 2;
-            holywater$delay = 4;
+            mc.interactionManager.interactItem(player, Hand.MAIN_HAND);
+            if (player.isUsingItem()) {
+                // предмет надо пить/есть: держим кнопку
+                holywater$stage = 3;
+                holywater$timeout = 80;
+                mc.options.useKey.setPressed(true);
+            } else {
+                holywater$stage = 2;
+                holywater$delay = 4;
+            }
         } else {
+            // возвращаем всё как было
             if (holywater$mode == 0) {
                 int syncId = player.playerScreenHandler.syncId;
                 mc.interactionManager.clickSlot(syncId, holywater$slotId, holywater$selected,
                     SlotActionType.SWAP, player);
-            } else {
+            } else if (holywater$mode == 1) {
                 inv.setSelectedSlot(holywater$selected);
             }
             holywater$stage = 0;
