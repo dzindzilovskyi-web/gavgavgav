@@ -20,6 +20,13 @@ import java.util.Locale;
 @Mixin(MinecraftClient.class)
 public abstract class MinecraftClientMixin {
 
+    // Скорость: пауза в тиках (1 тик = 0.05 с).
+    // DELAY_BEFORE: между «взял в руку» и «использовал».
+    // DELAY_AFTER: между «использовал» и «вернул на место».
+    // 0 = самое быстрое, но сервер может отменить действие. Если не срабатывает, поставьте 2.
+    @Unique private static final int DELAY_BEFORE = 1;
+    @Unique private static final int DELAY_AFTER = 1;
+
     // клавиши: Y, H, B, N
     @Unique private static final int[] KEYS = {
         GLFW.GLFW_KEY_Y, GLFW.GLFW_KEY_H, GLFW.GLFW_KEY_B, GLFW.GLFW_KEY_N
@@ -160,7 +167,7 @@ public abstract class MinecraftClientMixin {
         }
 
         holywater$stage = 1;
-        holywater$delay = 4; // 4 тика (0.2 с) паузы перед использованием
+        holywater$delay = DELAY_BEFORE;
     }
 
     // шаги 2 и 3: используем, ждём окончания питья, возвращаем всё на место
@@ -177,7 +184,7 @@ public abstract class MinecraftClientMixin {
             }
             mc.options.useKey.setPressed(false);
             holywater$stage = 2;
-            holywater$delay = 4;
+            holywater$delay = DELAY_AFTER;
             return;
         }
 
@@ -195,7 +202,7 @@ public abstract class MinecraftClientMixin {
                 mc.options.useKey.setPressed(true);
             } else {
                 holywater$stage = 2;
-                holywater$delay = 4;
+                holywater$delay = DELAY_AFTER;
             }
         } else {
             // возвращаем всё как было
