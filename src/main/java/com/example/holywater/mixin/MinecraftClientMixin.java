@@ -27,9 +27,9 @@ public abstract class MinecraftClientMixin {
     @Unique private static final int DELAY_BEFORE = 1;
     @Unique private static final int DELAY_AFTER = 1;
 
-    // клавиши: Y, H, B, N
+    // клавиши: Q, H, B, N
     @Unique private static final int[] KEYS = {
-        GLFW.GLFW_KEY_Y, GLFW.GLFW_KEY_H, GLFW.GLFW_KEY_B, GLFW.GLFW_KEY_N
+        GLFW.GLFW_KEY_Q, GLFW.GLFW_KEY_H, GLFW.GLFW_KEY_B, GLFW.GLFW_KEY_N
     };
     // что искать в названии предмета (без ё, в нижнем регистре)
     @Unique private static final String[] PARTS = {
@@ -61,6 +61,13 @@ public abstract class MinecraftClientMixin {
             boolean down = window != 0L && GLFW.glfwGetKey(window, KEYS[i]) == GLFW.GLFW_PRESS;
             if (down && !holywater$wasDown[i] && pressedIndex < 0) pressedIndex = i;
             holywater$wasDown[i] = down;
+
+            // Q по умолчанию выбрасывает предмет из руки: в игре (не в меню) гасим это нажатие
+            if (down && KEYS[i] == GLFW.GLFW_KEY_Q && mc.player != null && mc.currentScreen == null) {
+                while (mc.options.dropKey.wasPressed()) {
+                    // просто съедаем нажатия
+                }
+            }
         }
 
         if (mc.player == null) {
@@ -70,7 +77,7 @@ public abstract class MinecraftClientMixin {
         }
         if (!holywater$greeted) {
             holywater$greeted = true;
-            holywater$msg(mc, "[Мод] загружен. Y = святая вода, H = радиация, B = Палладин, N = Ассасин");
+            holywater$msg(mc, "[Мод] загружен. Q = святая вода, H = радиация, B = Палладин, N = Ассасин");
         }
         if (mc.interactionManager == null) return;
 
@@ -192,28 +199,3 @@ public abstract class MinecraftClientMixin {
             holywater$delay--;
             return;
         }
-
-        if (holywater$stage == 1) {
-            mc.interactionManager.interactItem(player, Hand.MAIN_HAND);
-            if (player.isUsingItem()) {
-                // предмет надо пить/есть: держим кнопку
-                holywater$stage = 3;
-                holywater$timeout = 80;
-                mc.options.useKey.setPressed(true);
-            } else {
-                holywater$stage = 2;
-                holywater$delay = DELAY_AFTER;
-            }
-        } else {
-            // возвращаем всё как было
-            if (holywater$mode == 0) {
-                int syncId = player.playerScreenHandler.syncId;
-                mc.interactionManager.clickSlot(syncId, holywater$slotId, holywater$selected,
-                    SlotActionType.SWAP, player);
-            } else if (holywater$mode == 1) {
-                inv.setSelectedSlot(holywater$selected);
-            }
-            holywater$stage = 0;
-        }
-    }
-}
